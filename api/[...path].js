@@ -128,7 +128,7 @@ module.exports=async function handler(req,res){
    const u=await requireUser(req,res,["author","admin"]);if(!u)return;
    const r=u.role==="admin"
     ?await pool.query("SELECT c.*,u.full_name,u.email FROM certificates c JOIN users u ON u.id=c.user_id ORDER BY c.issued_at DESC")
-    :await pool.query("SELECT * FROM certificates WHERE user_id=$1 ORDER BY issued_at DESC",[u.id]);
+    :await pool.query("SELECT c.*,u.full_name,u.email FROM certificates c JOIN users u ON u.id=c.user_id WHERE c.user_id=$1 ORDER BY c.issued_at DESC",[u.id]);
    return json(res,200,{certificates:r.rows});
   }
   if(path==="admin/certificates"&&req.method==="POST"){
