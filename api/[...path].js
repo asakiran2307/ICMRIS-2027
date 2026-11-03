@@ -3,6 +3,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { handleUpload } = require("@vercel/blob/client");
+const { get } = require("@vercel/blob");
+const { Readable } = require("stream");
 
 const pool = global.__icmrisPool || new Pool({
   connectionString: process.env.DATABASE_URL, max: 5,
@@ -53,9 +55,16 @@ module.exports=async function handler(req,res){
   }
   if(path==="newsletter"&&req.method==="POST"){const b=await readBody(req),mail=email(b.email);if(!validEmail(mail))return json(res,400,{error:"Enter a valid email address."});await pool.query("INSERT INTO newsletter_subscribers(email) VALUES($1) ON CONFLICT(email) DO UPDATE SET is_active=TRUE",[mail]);return json(res,201,{ok:true,message:"You are subscribed to conference updates."})}
   if(path==="announcements"&&req.method==="GET"){const r=await pool.query("SELECT id,title,body,published_at FROM announcements WHERE is_published=TRUE ORDER BY published_at DESC NULLS LAST,created_at DESC");return json(res,200,{announcements:r.rows})}
+  if(path==="files"&&req.method==="GET"){
+   const u=await requireUser(req,res,["author","reviewer","admin"]);if(!u)return;const fileId=url.searchParams.get("id");if(!uuid(fileId))return json(res,400,{error:"Invalid file reference."});
+   const r=await pool.query("SELECT f.*,s.author_id FROM submission_files f JOIN submissions s ON s.id=f.submission_id WHERE f.id=$1",[fileId]);if(!r.rowCount)return json(res,404,{error:"File not found."});const f=r.rows[0];
+   if(u.role==="author"&&f.author_id!==u.id)return json(res,403,{error:"You cannot access this manuscript."});
+   if(u.role==="reviewer"){const assigned=await pool.query("SELECT 1 FROM reviewer_assignments WHERE submission_id=$1 AND reviewer_id=$2",[f.submission_id,u.id]);if(!assigned.rowCount)return json(res,403,{error:"This manuscript is not assigned to you."});}
+   const blob=await get(f.storage_key,{access:"private"});if(!blob)return json(res,404,{error:"Stored manuscript not found."});res.setHeader("Content-Type",blob.blob.contentType||"application/pdf");res.setHeader("Content-Disposition","inline; filename="+encodeURIComponent(f.file_name));return Readable.fromWeb(blob.stream).pipe(res);
+  }
   if(path==="upload"&&req.method==="POST"){
    const u=await requireUser(req,res,["author","admin"]);if(!u)return;if(!process.env.BLOB_READ_WRITE_TOKEN)return json(res,503,{error:"Paper storage is not configured. Add BLOB_READ_WRITE_TOKEN in Vercel."});
-   return await handleUpload({request:req,body:await readBody(req),onBeforeGenerateToken:async(pathname,clientPayload)=>{let m={};try{m=JSON.parse(clientPayload||"{}")}catch{}if(!uuid(m.submissionId))throw new Error("A valid submission ID is required.");const own=await pool.query("SELECT id FROM submissions WHERE id=$1 AND author_id=$2",[m.submissionId,u.id]);if(!own.rowCount&&u.role!=="admin")throw new Error("You cannot upload to this submission.");return {allowedContentTypes:["application/pdf"],maximumSizeInBytes:15*1024*1024,addRandomSuffix:true,tokenPayload:JSON.stringify({submissionId:m.submissionId,userId:u.id})}},onUploadCompleted:async({blob,tokenPayload})=>{const m=JSON.parse(tokenPayload||"{}");const r=await pool.query("INSERT INTO submission_files(submission_id,uploaded_by,file_name,mime_type,file_size,storage_url,storage_key) VALUES($1,$2,$3,'application/pdf',$4,$5,$6) RETURNING id",[m.submissionId,m.userId,blob.pathname.split("/").pop(),blob.size,blob.url,blob.pathname]);await audit({id:m.userId},"paper.file_uploaded","submission",m.submissionId,{fileId:r.rows[0].id})}})
+   return await handleUpload({request:req,body:await readBody(req),onBeforeGenerateToken:async(pathname,clientPayload)=>{let m={};try{m=JSON.parse(clientPayload||"{}")}catch{}if(!uuid(m.submissionId))throw new Error("A valid submission ID is required.");const own=await pool.query("SELECT id FROM submissions WHERE id=$1 AND author_id=$2",[m.submissionId,u.id]);if(!own.rowCount&&u.role!=="admin")throw new Error("You cannot upload to this submission.");return {access:"private",allowedContentTypes:["application/pdf"],maximumSizeInBytes:15*1024*1024,addRandomSuffix:true,tokenPayload:JSON.stringify({submissionId:m.submissionId,userId:u.id})}},onUploadCompleted:async({blob,tokenPayload})=>{const m=JSON.parse(tokenPayload||"{}");const r=await pool.query("INSERT INTO submission_files(submission_id,uploaded_by,file_name,mime_type,file_size,storage_url,storage_key) VALUES($1,$2,$3,'application/pdf',$4,$5,$6) RETURNING id",[m.submissionId,m.userId,blob.pathname.split("/").pop(),blob.size,blob.url,blob.pathname]);await audit({id:m.userId},"paper.file_uploaded","submission",m.submissionId,{fileId:r.rows[0].id})}})
   }
   if(path==="submissions"&&req.method==="POST"){
    const u=await requireUser(req,res,["author","admin"]);if(!u)return;const b=await readBody(req),title=String(b.title||"").trim(),abstract=String(b.abstract||"").trim(),track=String(b.track||"").trim();
