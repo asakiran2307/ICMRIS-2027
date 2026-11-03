@@ -6,10 +6,14 @@ const { handleUpload } = require("@vercel/blob/client");
 const { get } = require("@vercel/blob");
 const { Readable } = require("stream");
 
+const databaseUrl = process.env.DATABASE_URL?.replace(
+  /([?&]sslmode=)(prefer|require|verify-ca)(?=(&|$))/i,
+  "$1verify-full"
+);
 const pool = global.__icmrisPool || new Pool({
-  connectionString: process.env.DATABASE_URL, max: 5,
+  connectionString: databaseUrl, max: 5,
   idleTimeoutMillis: 10000, connectionTimeoutMillis: 10000,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: true }
 });
 global.__icmrisPool = pool;
 const COOKIE = "icmris_session";
@@ -103,7 +107,7 @@ module.exports=async function handler(req,res){
   if(path==="admin/payment-settings"&&req.method==="POST"){
    const u=await requireUser(req,res,["admin"]);if(!u)return;const b=await readBody(req),upi=String(b.upiId||"").trim(),payee=String(b.payeeName||"").trim(),qr=String(b.qrImageUrl||"").trim();if(upi.length>120||payee.length>160||(qr&&(!/^https:\/\//i.test(qr)||qr.length>1000)))return json(res,400,{error:"Enter a valid UPI ID, payee name and HTTPS QR image URL."});
    const fees={};for(const k of ["student","research_scholar","faculty","industry","attendee"]){const n=Number((b.fees||{})[k]??0);if(!Number.isFinite(n)||n<0||n>1000000)return json(res,400,{error:"Enter valid registration fees in INR."});fees[k]=Math.round(n*100)}
-   const r=await pool.query("UPDATE conference_payment_settings SET upi_id=$1,payee_name=$2,qr_image_url=$3,fees_paise=$4::jsonb,instructions=$5,updated_by=$6,updated_at=NOW() WHERE id=TRUE RETURNING upi_id,payee_name,qr_image_url,fees_paise,instructions",[upi||null,payee||null,qr||null,JSON.stringify(fees),String(b.instructions||"").slice(0,1500),u.id]);await audit(u,"payment.settings_updated","payment_settings",null,{},req);return json(res,200,{settings:r.rows[0]});
+   const r=await pool.query("INSERT INTO conference_payment_settings(id,upi_id,payee_name,qr_image_url,fees_paise,instructions,updated_by,updated_at) VALUES(TRUE,$1,$2,$3,$4::jsonb,$5,$6,NOW()) ON CONFLICT(id) DO UPDATE SET upi_id=EXCLUDED.upi_id,payee_name=EXCLUDED.payee_name,qr_image_url=EXCLUDED.qr_image_url,fees_paise=EXCLUDED.fees_paise,instructions=EXCLUDED.instructions,updated_by=EXCLUDED.updated_by,updated_at=NOW() RETURNING upi_id,payee_name,qr_image_url,fees_paise,instructions",[upi||null,payee||null,qr||null,JSON.stringify(fees),String(b.instructions||"").slice(0,1500),u.id]);await audit(u,"payment.settings_updated","payment_settings",null,{},req);return json(res,200,{settings:r.rows[0]});
   }
   if(path==="registrations"&&req.method==="POST"){
    const u=await requireUser(req,res,["author","admin"]);if(!u)return;const b=await readBody(req);if(!["student","research_scholar","faculty","industry","attendee"].includes(b.registrationType)||String(b.institution||"").trim().length<2||String(b.country||"").trim().length<2||String(b.phone||"").trim().length<7)return json(res,400,{error:"Complete all registration details."});
@@ -130,7 +134,7 @@ module.exports=async function handler(req,res){
    const u=await requireUser(req,res,["author","reviewer","admin"]);if(!u)return;
    if(u.role==="admin"){const [s,p,g,v]=await Promise.all([pool.query("SELECT (SELECT COUNT(*) FROM users WHERE role='author')::int AS authors,(SELECT COUNT(*) FROM submissions)::int AS submissions,(SELECT COUNT(*) FROM submissions WHERE status='under_review')::int AS under_review,(SELECT COUNT(*) FROM submissions WHERE status='accepted')::int AS accepted,(SELECT COUNT(*) FROM registrations)::int AS registrations,(SELECT COUNT(*) FROM payments WHERE status='paid')::int AS paid_payments"),pool.query("SELECT s.*,u.full_name AS author_name,u.email AS author_email FROM submissions s JOIN users u ON u.id=s.author_id ORDER BY s.created_at DESC LIMIT 100"),pool.query("SELECT r.*,u.full_name,u.email,(SELECT json_build_object('id',pp.id,'utr_number',pp.utr_number,'status',pp.status,'rejection_reason',pp.rejection_reason,'created_at',pp.created_at) FROM payment_proofs pp WHERE pp.registration_id=r.id ORDER BY pp.created_at DESC LIMIT 1) AS payment_proof FROM registrations r JOIN users u ON u.id=r.user_id ORDER BY r.created_at DESC LIMIT 100"),pool.query("SELECT id,full_name,email FROM users WHERE role='reviewer' AND is_active=TRUE ORDER BY full_name")]);return json(res,200,{role:u.role,stats:s.rows[0],submissions:p.rows,registrations:g.rows,reviewers:v.rows})}
    if(u.role==="reviewer"){const r=await pool.query("SELECT s.*,a.status AS assignment_status,a.due_at,(SELECT json_agg(json_build_object('id',f.id,'file_name',f.file_name) ORDER BY f.created_at DESC) FROM submission_files f WHERE f.submission_id=s.id) AS files FROM submissions s JOIN reviewer_assignments a ON a.submission_id=s.id WHERE a.reviewer_id=$1 ORDER BY s.created_at DESC",[u.id]);return json(res,200,{role:u.role,submissions:r.rows})}
-   const [s,g]=await Promise.all([pool.query("SELECT s.*,(SELECT json_agg(json_build_object('file_name',f.file_name,'storage_url',f.storage_url,'created_at',f.created_at) ORDER BY f.created_at DESC) FROM submission_files f WHERE f.submission_id=s.id) AS files FROM submissions s WHERE s.author_id=$1 ORDER BY s.created_at DESC",[u.id]),pool.query("SELECT r.*,(SELECT json_build_object('id',pp.id,'utr_number',pp.utr_number,'status',pp.status,'rejection_reason',pp.rejection_reason,'created_at',pp.created_at) FROM payment_proofs pp WHERE pp.registration_id=r.id ORDER BY pp.created_at DESC LIMIT 1) AS payment_proof FROM registrations r WHERE r.user_id=$1 ORDER BY r.created_at DESC",[u.id])]);return json(res,200,{role:u.role,submissions:s.rows,registrations:g.rows})
+   const [s,g]=await Promise.all([pool.query("SELECT s.*,(SELECT json_agg(json_build_object('id',f.id,'file_name',f.file_name,'created_at',f.created_at) ORDER BY f.created_at DESC) FROM submission_files f WHERE f.submission_id=s.id) AS files FROM submissions s WHERE s.author_id=$1 ORDER BY s.created_at DESC",[u.id]),pool.query("SELECT r.*,(SELECT json_build_object('id',pp.id,'utr_number',pp.utr_number,'status',pp.status,'rejection_reason',pp.rejection_reason,'created_at',pp.created_at) FROM payment_proofs pp WHERE pp.registration_id=r.id ORDER BY pp.created_at DESC LIMIT 1) AS payment_proof FROM registrations r WHERE r.user_id=$1 ORDER BY r.created_at DESC",[u.id])]);return json(res,200,{role:u.role,submissions:s.rows,registrations:g.rows})
   }
   if(path==="admin/users"&&req.method==="GET"){const u=await requireUser(req,res,["admin"]);if(!u)return;const r=await pool.query("SELECT id,full_name,email,role,affiliation,is_active,created_at FROM users ORDER BY created_at DESC");return json(res,200,{users:r.rows})}
   if(path==="admin/users"&&req.method==="POST"){
