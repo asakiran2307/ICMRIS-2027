@@ -49,6 +49,16 @@ module.exports=async function handler(req,res){
    if(!r.rows[0]||!r.rows[0].is_active||!(await bcrypt.compare(pw,r.rows[0].password_hash)))return json(res,401,{error:"Invalid email or password."});
    const u=r.rows[0];delete u.password_hash;setCookie(res,sign(u));await audit(u,"auth.login","user",u.id,{},req);return json(res,200,{user:u})
   }
+  if(path==="auth/change-password"&&req.method==="POST"){
+   const u=await requireUser(req,res,["author","reviewer","admin"]);if(!u)return;
+   const b=await readBody(req),current=String(b.currentPassword||""),next=String(b.newPassword||"");
+   if(next.length<12)return json(res,400,{error:"New password must be at least 12 characters."});
+   if(current===next)return json(res,400,{error:"Choose a password different from your current password."});
+   const found=await pool.query("SELECT password_hash FROM users WHERE id=$1",[u.id]);
+   if(!found.rowCount||!(await bcrypt.compare(current,found.rows[0].password_hash)))return json(res,400,{error:"Current password is incorrect."});
+   const hash=await bcrypt.hash(next,12);await pool.query("UPDATE users SET password_hash=$1,updated_at=NOW() WHERE id=$2",[hash,u.id]);
+   await audit(u,"auth.password_changed","user",u.id,{},req);return json(res,200,{ok:true,message:"Password changed successfully."});
+  }
   if(path==="auth/logout"&&req.method==="POST"){clearCookie(res);return json(res,200,{ok:true})}
   if(path==="auth/me"&&req.method==="GET"){const u=await session(req);return u?json(res,200,{user:u}):json(res,401,{error:"Not signed in"})}
   if(path==="admin/bootstrap"&&req.method==="POST"){
