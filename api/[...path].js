@@ -6,10 +6,14 @@ const { handleUpload } = require("@vercel/blob/client");
 const { get } = require("@vercel/blob");
 const { Readable } = require("stream");
 
+const databaseUrl = process.env.DATABASE_URL?.replace(
+  /([?&]sslmode=)(prefer|require|verify-ca)(?=(&|$))/i,
+  "$1verify-full"
+);
 const pool = global.__icmrisPool || new Pool({
-  connectionString: process.env.DATABASE_URL, max: 5,
+  connectionString: databaseUrl, max: 5,
   idleTimeoutMillis: 10000, connectionTimeoutMillis: 10000,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: true }
 });
 global.__icmrisPool = pool;
 const COOKIE = "icmris_session";
