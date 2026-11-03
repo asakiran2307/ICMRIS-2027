@@ -123,6 +123,22 @@ module.exports=async function handler(req,res){
    const a=await requireUser(req,res,["admin"]);if(!a)return;const b=await readBody(req),title=String(b.title||"").trim(),body=String(b.body||"").trim();if(title.length<3||body.length<5)return json(res,400,{error:"Enter an announcement title and message."});const r=await pool.query("INSERT INTO announcements(title,body,is_published,published_at,created_by) VALUES($1,$2,$3,CASE WHEN $3 THEN NOW() ELSE NULL END,$4) RETURNING *",[title,body,!!b.publish,a.id]);return json(res,201,{announcement:r.rows[0]})
   }
   if(path==="admin/audit"&&req.method==="GET"){const a=await requireUser(req,res,["admin"]);if(!a)return;const r=await pool.query("SELECT l.*,u.full_name,u.email FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id ORDER BY l.created_at DESC LIMIT 200");return json(res,200,{logs:r.rows})}
+
+  if(path==="certificates"&&req.method==="GET"){
+   const u=await requireUser(req,res,["author","admin"]);if(!u)return;
+   const r=u.role==="admin"
+    ?await pool.query("SELECT c.*,u.full_name,u.email FROM certificates c JOIN users u ON u.id=c.user_id ORDER BY c.issued_at DESC")
+    :await pool.query("SELECT * FROM certificates WHERE user_id=$1 ORDER BY issued_at DESC",[u.id]);
+   return json(res,200,{certificates:r.rows});
+  }
+  if(path==="admin/certificates"&&req.method==="POST"){
+   const a=await requireUser(req,res,["admin"]);if(!a)return;const b=await readBody(req);
+   if(!uuid(b.registrationId)||!["participation","paper_presentation","reviewer"].includes(b.certificateType))return json(res,400,{error:"Select a valid registration and certificate type."});
+   const reg=await pool.query("SELECT id,user_id FROM registrations WHERE id=$1",[b.registrationId]);if(!reg.rowCount)return json(res,404,{error:"Registration not found."});
+   const code="ICMRIS27-CERT-"+crypto.randomBytes(5).toString("hex").toUpperCase();
+   const r=await pool.query("INSERT INTO certificates(user_id,registration_id,certificate_type,certificate_code,issued_by) VALUES($1,$2,$3,$4,$5) RETURNING *",[reg.rows[0].user_id,reg.rows[0].id,b.certificateType,code,a.id]);
+   await audit(a,"certificate.issued","certificate",r.rows[0].id,{certificateCode:code},req);return json(res,201,{certificate:r.rows[0]});
+  }
   return json(res,404,{error:"API route not found."});
  }catch(e){console.error("ICMRIS API error:",e.message);const s=e.status||(e.code==="23505"?409:500);return json(res,s,{error:s===409?"This record already exists.":s===400?e.message:"The server could not complete this request."})}
 };
