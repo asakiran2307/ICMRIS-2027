@@ -68,7 +68,32 @@ test("serverless API exposes the expected core route handlers", () => {
     'path==="admin/bootstrap"',
     'path==="submissions"',
     'path==="reviews"',
+    'path==="profile"',
+    'path==="submissions/submit"',
+    'path==="review-rubric"',
+    'path==="admin/review-rubric"',
   ]) {
     assert.ok(api.includes(route), `Expected API route not found: ${route}`);
   }
+});
+
+test("author workflow requires profile confirmation and PDF upload before submission", () => {
+  const api = read("api/[...path].js");
+  const portal = read("portal.js");
+  assert.ok(api.includes("profile_completed_at"), "Profile completion must be stored in Neon");
+  assert.ok(api.includes("Complete and confirm your author profile before submitting a paper."));
+  assert.ok(api.includes("Upload the manuscript PDF before final submission."));
+  assert.ok(portal.includes('id="profileGate"'));
+  assert.ok(portal.includes('id="paperSubmissionCard" hidden'));
+  assert.ok(portal.includes('api("submissions/submit"'));
+});
+
+test("reviewer scoring is driven by the administrator-configured weighted rubric", () => {
+  const api = read("api/[...path].js");
+  const portal = read("portal.js");
+  assert.ok(api.includes("review_rubric"));
+  assert.ok(api.includes("criterion_scores"));
+  assert.ok(api.includes("total_score"));
+  assert.ok(portal.includes('id="reviewRubricForm"'));
+  assert.ok(portal.includes('api("review-rubric")'));
 });
