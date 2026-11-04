@@ -1,3 +1,4 @@
+// These checks run on the same Node major version configured for the Vercel project.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
