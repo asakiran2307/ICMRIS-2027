@@ -127,10 +127,16 @@ module.exports=async function handler(req,res){
    const r=await pool.query(q,params);return json(res,200,{submissions:r.rows})
   }
   if(path==="reviews"&&req.method==="POST"){
-   const u=await requireUser(req,res,["reviewer"]);if(!u)return;const b=await readBody(req);if(!uuid(b.submissionId)||!["accept","minor_revision","major_revision","reject"].includes(b.recommendation)||String(b.commentsToAuthor||"").trim().length<20)return json(res,400,{error:"Complete the review recommendation and author comments."});
+   const u=await requireUser(req,res,["reviewer"]);if(!u)return;const b=await readBody(req);
+   if(!uuid(b.submissionId)||!["accept","minor_revision","major_revision","reject"].includes(b.recommendation)||String(b.commentsToAuthor||"").trim().length<20)return json(res,400,{error:"Complete the review recommendation and author comments."});
    const a=await pool.query("SELECT id FROM reviewer_assignments WHERE submission_id=$1 AND reviewer_id=$2 AND status IN ('assigned','accepted')",[b.submissionId,u.id]);if(!a.rowCount)return json(res,403,{error:"This paper is not assigned to you."});
-   const r=await pool.query("INSERT INTO reviews(submission_id,reviewer_id,recommendation,originality_score,technical_score,clarity_score,significance_score,comments_to_author,confidential_comments) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(submission_id,reviewer_id) DO UPDATE SET recommendation=EXCLUDED.recommendation,originality_score=EXCLUDED.originality_score,technical_score=EXCLUDED.technical_score,clarity_score=EXCLUDED.clarity_score,significance_score=EXCLUDED.significance_score,comments_to_author=EXCLUDED.comments_to_author,confidential_comments=EXCLUDED.confidential_comments,submitted_at=NOW() RETURNING *",[b.submissionId,u.id,b.recommendation,b.originalityScore||null,b.technicalScore||null,b.clarityScore||null,b.significanceScore||null,String(b.commentsToAuthor).trim(),String(b.confidentialComments||"").trim()||null]);
-   await pool.query("UPDATE reviewer_assignments SET status='completed' WHERE submission_id=$1 AND reviewer_id=$2",[b.submissionId,u.id]);await audit(u,"review.submitted","submission",b.submissionId,{},req);return json(res,201,{review:r.rows[0]})
+   const rr=await pool.query("SELECT criteria FROM review_rubric WHERE id=TRUE"),criteria=rr.rows[0]?.criteria||[];if(!criteria.length)return json(res,503,{error:"The administrator has not configured the review rubric."});
+   const scores=b.scores&&typeof b.scores==="object"?b.scores:{};
+   if(Object.keys(scores).length!==criteria.length)return json(res,400,{error:"Enter a score for every administrator-defined review criterion."});
+   let total=0;for(const c of criteria){const n=Number(scores[c.key]);if(!Number.isFinite(n)||n<0||n>Number(c.max_score))return json(res,400,{error:"Score for "+c.label+" must be between 0 and "+c.max_score+"."});total+=(n/Number(c.max_score))*Number(c.weight);}
+   total=Math.round(total*100)/100;
+   const r=await pool.query("INSERT INTO reviews(submission_id,reviewer_id,recommendation,comments_to_author,confidential_comments,criterion_scores,total_score) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7) ON CONFLICT(submission_id,reviewer_id) DO UPDATE SET recommendation=EXCLUDED.recommendation,comments_to_author=EXCLUDED.comments_to_author,confidential_comments=EXCLUDED.confidential_comments,criterion_scores=EXCLUDED.criterion_scores,total_score=EXCLUDED.total_score,submitted_at=NOW() RETURNING *",[b.submissionId,u.id,b.recommendation,String(b.commentsToAuthor).trim(),String(b.confidentialComments||"").trim()||null,JSON.stringify(scores),total]);
+   await pool.query("UPDATE reviewer_assignments SET status='completed' WHERE submission_id=$1 AND reviewer_id=$2",[b.submissionId,u.id]);await audit(u,"review.submitted","submission",b.submissionId,{totalScore:total},req);return json(res,201,{review:r.rows[0]})
   }
 
   if(path==="payment-settings"&&req.method==="GET"){
