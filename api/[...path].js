@@ -34,7 +34,7 @@ const makePaperCode=()=>"ICMRIS27-"+crypto.randomBytes(4).toString("hex").toUppe
 module.exports=async function handler(req,res){
  res.setHeader("X-Content-Type-Options","nosniff");res.setHeader("Referrer-Policy","strict-origin-when-cross-origin");res.setHeader("Cache-Control","no-store");
  if(req.method==="OPTIONS"){res.setHeader("Allow","GET,POST,PATCH,DELETE,OPTIONS");return res.status(204).end()}
- const url=new URL(req.url,"https://icmris-2027.vercel.app");const path=url.pathname.replace(/^\/api\/?/,"").replace(/\/$/,"");
+ const url=new URL(req.url,"https://icmris-2027.vercel.app");const path=(url.searchParams.get("__route")||url.pathname.replace(/^\/api\/?/,"")).replace(/\/$/,"");
  try{
   if(!process.env.DATABASE_URL||!process.env.JWT_SECRET)return json(res,503,{error:"Backend environment is not configured."});
   if(path==="health"&&req.method==="GET"){const r=await pool.query("SELECT NOW() AS database_time,current_database() AS database_name");return json(res,200,{ok:true,service:"ICMRIS–2027 API",database:r.rows[0].database_name,time:r.rows[0].database_time})}
